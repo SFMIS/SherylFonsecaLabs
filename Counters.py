@@ -68,70 +68,110 @@ class TimeKeeper(Counter):
         print("Timekeeper: constructor")
         super().__init__()
         self._starttime = 0
+        self._running = False
 
     def start(self):
         """ Start the timer. Note that if previously stopped, this will add to previous time """
         
         print("Timekeeper: start")
+        """ If timer was already running, the start will get reset to the new time """
+
         self._starttime = time.ticks_ms()
+        self._running = True
 
     def stop(self):
         """ Stop the timer. Count will save the # of ms elapsed """
         
         print("Timekeeper: stop")
-        self._count = self._count + time.ticks_diff(time.ticks_ms(),self._starttime)
+        """ If it was already stopped, nothing to be done """
+        if self._running:
+            self._running = False
+            self._count = self._count + time.ticks_diff(time.ticks_ms(),self._starttime)
+
+    def reset(self):
+        """ 
+        Resetting the timer will set count to 0 and starttime to the current time 
+        But timer keeps running if not stopped
+        """
+        super().reset()
+        self._starttime = time.ticks_ms()
 
     def __str__(self) -> str:
         """ Get a string representation of time in HH:MM:SS.ms format """
         
-        curtime = self._count + time.ticks_diff(time.ticks_ms(),self._starttime)
+        curtime = self._count + (time.ticks_diff(time.ticks_ms(),self._starttime) if self._running else 0)
         ms = curtime % 1000
         sec = (curtime // 1000) % 60
         min = (curtime // 60000) % 60
         hr = (curtime // 3600000)
         return f"{hr:02d}:{min:02d}:{sec:02d}.{ms:03d}"
 
-class HardwareTimer(Counter):
+
+class BaseTimer(Counter):
+    """ 
+    Decided to create a base class for the Software and Hardware timers
+    since there are many properties in common. Now allowing no handlers in init
+    but obviously a handler has to be set in order to ensure something happens when
+    the time runs out.
+    """
+
+    def __init__(self, handler=None):
+        super().__init__()
+        self._handler = handler
+        self._started = False
+
+    def setHandler(self, handler):
+        self._handler = handler
+
+    def start(self, seconds):
+        self._count = seconds
+        self._started = True
+
+    def cancel(self):
+        self._started = False
+        self._count = 0
+
+    def reset(self):
+        """ Make sure reset cancels the timer first """
+        
+        super().reset()
+        self.cancel()
+        
+class HardwareTimer(BaseTimer):
     """
     This uses the hardware internal timer of the Pico. This does NOT WORK on the simulator!
     The internal count here is the timer setting that is not updated until reset or cancelled
     
     """
     
-    def __init__(self, handler):
+    def __init__(self, handler=None):
         """
         A hardware timer must be initialized with a handler. The handler must implement
         a timeout() method which will be called when the timer is up. Ideally, there
         should only be a single timer active at a time.
         """
         
-        super().__init__()
-        self._handler = handler
+        super().__init__(handler)
         self._timer = Timer(-1)
-        self._started = False
 
     def start(self, seconds):
         """ Start the timer with the number of seconds to use. """
         
-        self._count = seconds
-        self._timer.init(period = seconds*1000, mode=Timer.PERIODIC, callback = self._handler.timeout())
-        self._started = True
+        super().__start(seconds)
+        self._timer.init(period = int(seconds*1000), mode=Timer.ONE_SHOT, callback = self.timeout)
 
     def cancel(self):
-        """ Cancel the timer. Note that a normal stop will cause tha handler callback. """
+        """ Cancel the timer. Note that a normal stop will cause the handler callback. """
         
         if self._started:
             self._timer.deinit()
-        self._started = False
-        self._count = 0
+        super().cancel()
     
-    def reset(self):
-        """ Make sure reset cancels the timer first """
-        
-        super().reset()
+    def timeout(self, timer):
         self.cancel()
+        self._handler.timeout()
 
-class SoftwareTimer(Counter):
+class SoftwareTimer(BaseTimer):
     """
     A simpler software-based timer that will work on the simulator as well. Caller
     again implements a handler method, but will need to poll the timer using the
@@ -159,14 +199,7 @@ class SoftwareTimer(Counter):
         if self._started:
             self._starttime = 0
             print(f"{self._count} sec timer cancelled")
-        self._started = False
-        self._count = 0
-
-    def reset(self):
-        """ Make sure reset cancels the timer first """
-        
-        super().reset()
-        self.cancel()
+        super().cancel()
 
     def check(self):
         """
